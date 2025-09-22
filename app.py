@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 import streamlit as st
 import os
+import re
 import sqlite3
 import google.generativeai as genai
 
@@ -14,7 +15,7 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 def get_gemini_response(question, prompt):
     """Loads Google Gemini Model and provides response to the query."""
-    model = genai.GenerativeModel('gemini-pro')
+    model = genai.GenerativeModel('gemini-2.0-flash')
     response = model.generate_content([prompt, question])
     return response.text
 
@@ -62,6 +63,44 @@ def get_db_schema_description(db_path):
     conn.close()
     return schema_description
 
+def get_db_tables_and_columns(db_path):
+    """Returns a dict of table -> list of columns for validation and prompting."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
+    tables = [t[0] for t in cursor.fetchall()]
+    schema: dict[str, list[str]] = {}
+    for table_name in tables:
+        cursor.execute(f'PRAGMA table_info("{table_name}");')
+        columns = [row[1] for row in cursor.fetchall()]
+        schema[table_name] = columns
+    conn.close()
+    return schema
+
+def clean_sql_output(text):
+    """Extracts a plausible SQL statement from model output, removing code fences/explanations."""
+    if not text:
+        return ""
+    cleaned = text.strip()
+    # Remove markdown fences if present
+    cleaned = re.sub(r"^```(?:sql)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+    # If the model prefixed with labels, remove them
+    cleaned = re.sub(r"^(SQL\s*Query\s*:\s*)", "", cleaned, flags=re.IGNORECASE)
+    # Try to extract the first SELECT...; statement
+    match = re.search(r"(SELECT[\s\S]*?;)", cleaned, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return cleaned
+
+def validate_sql_tables(sql, allowed_tables):
+    """Basic validation to ensure referenced tables exist in the database."""
+    # Find FROM and JOIN table tokens (very naive but sufficient for single-table EMPLOYEE)
+    table_like = re.findall(r"\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)|\bJOIN\s+([A-Za-z_][A-Za-z0-9_]*)", sql, flags=re.IGNORECASE)
+    referenced = set([t for pair in table_like for t in pair if t])
+    # If no tables found, allow (the model might use subqueries). Otherwise enforce
+    return not referenced or all(t in allowed_tables for t in referenced)
+
 # --- Streamlit App ---
 
 st.set_page_config(page_title="AI-Driven HR Insights", page_icon=":bar_chart:", layout="wide")
@@ -84,21 +123,30 @@ db_path = "employee_kpi.db"
 
 if os.path.exists(db_path):
     schema_description = get_db_schema_description(db_path)
+    schema_dict = get_db_tables_and_columns(db_path)
+    allowed_tables = list(schema_dict.keys())
+    # Build a concise, machine-friendly schema hint
+    schema_hint_lines = []
+    for table_name, columns in schema_dict.items():
+        cols = ", ".join(columns)
+        schema_hint_lines.append(f"- {table_name}({cols})")
+    schema_hint = "\n".join(schema_hint_lines)
     
     prompt_template = f"""
-    You are an expert in converting English questions into SQL queries.
-    Based on the database schema provided below, generate a SQL query that answers the user's question.
-    
-    **Database Schema:**
-    {schema_description}
-    
-    **Instructions:**
-    - Only output the SQL query.
-    - Do not include ```sql at the beginning or ``` at the end.
-    
-    **Example:**
-    User Question: "How many employees are in the IT department?"
-    SQL Query: SELECT COUNT(*) FROM EMPLOYEE WHERE DEPARTMENT="IT";
+    You convert English questions into valid SQLite SQL.
+    Use ONLY existing tables and columns from this schema:
+    {schema_hint}
+
+    Rules:
+    - Output ONLY the final SQL statement; no explanations or labels.
+    - Use exact table/column names and SQLite syntax.
+    - Prefer a single statement ending with a semicolon.
+    - If aggregation is implied, use GROUP BY appropriately.
+    - Do NOT invent tables or columns.
+
+    Example:
+    Q: How many employees are in the IT department?
+    A: SELECT COUNT(*) AS count FROM EMPLOYEE WHERE DEPARTMENT = 'IT';
     """
 
     # --- User Input ---
@@ -107,13 +155,25 @@ if os.path.exists(db_path):
 
     if submit and question:
         with st.spinner("Generating SQL query and fetching data..."):
-            sql_query = get_gemini_response(question, prompt_template)
-            
+            raw = get_gemini_response(question, prompt_template)
+            sql_query = clean_sql_output(raw)
+
+            # Validate and, if needed, try one stricter regeneration
+            if not validate_sql_tables(sql_query, set(allowed_tables)):
+                strict_prompt = (
+                    prompt_template
+                    + "\nAdditional constraint: The ONLY valid tables are: "
+                    + ", ".join(allowed_tables)
+                    + ". Do not reference any other tables."
+                )
+                raw2 = get_gemini_response(question, strict_prompt)
+                sql_query = clean_sql_output(raw2)
+
             st.subheader("Generated SQL Query")
             st.code(sql_query, language='sql')
-            
+
             data = read_sql_query(sql_query, db_path)
-            
+
             if data:
                 st.subheader("Query Results")
                 st.dataframe(data)
