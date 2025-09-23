@@ -103,7 +103,7 @@ def validate_sql_tables(sql, allowed_tables):
 
 # --- Streamlit App ---
 
-st.set_page_config(page_title="AI-Driven HR Insights", page_icon=":bar_chart:", layout="wide")
+st.set_page_config(page_title="AI-Driven Movie Insights", page_icon=":clapper:", layout="wide")
 
 # --- UI Styling ---
 st.markdown("""
@@ -115,8 +115,8 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("AI-Driven HR Insights")
-st.markdown("### Query Your HR Data with Natural Language")
+st.title("AI-Driven Movie Insights")
+st.markdown("### Query Your Movies Database with Natural Language")
 
 # --- Dynamic Prompt Generation ---
 db_path = "employee_kpi.db"
@@ -145,12 +145,12 @@ if os.path.exists(db_path):
     - Do NOT invent tables or columns.
 
     Example:
-    Q: How many employees are in the IT department?
-    A: SELECT COUNT(*) AS count FROM EMPLOYEE WHERE DEPARTMENT = 'IT';
+    Q: How many movies are in the Action genre?
+    A: SELECT COUNT(*) AS count FROM MOVIES WHERE GENRE = 'Action';
     """
 
     # --- User Input ---
-    question = st.text_input("Ask your question:", key="input", placeholder="e.g., What is the average salary in the Sales department?")
+    question = st.text_input("Ask your question:", key="input", placeholder="e.g., Top 5 movies by BOX_OFFICE_DOMESTIC; or Average RATING by GENRE")
     submit = st.button("Get Insights")
 
     if submit and question:
@@ -187,8 +187,8 @@ else:
 # --- Sidebar & Footer ---
 st.sidebar.header("About")
 st.sidebar.info("""
-This app uses AI to dynamically generate SQL queries based on the structure of your database. 
-It inspects the tables and columns to provide accurate, natural language querying of your HR data.
+This app uses AI to dynamically generate SQL queries based on your movie database schema. 
+It inspects the tables and columns (e.g., MOVIES, ACTORS, MOVIE_ACTORS, REVENUES) to provide accurate, natural language querying.
 """)
 st.markdown("---")
-st.markdown("**Note:** This is a POC. Ensure data privacy and security when handling real employee data.")
+st.markdown("**Note:** This is a POC. Ensure data privacy and security when handling real data.")
